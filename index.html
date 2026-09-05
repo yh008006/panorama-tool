@@ -401,7 +401,15 @@
         </button>
         <button class="btn btn-primary" id="downloadCompositeBtn">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-          合并图下载（1 张 PNG）
+          合并图下载（无损拼回）
+        </button>
+        <button class="btn btn-primary" id="downloadGridBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="1"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/></svg>
+          宫格图下载（带分割线）
+        </button>
+        <button class="btn btn-primary" id="downloadNormalGridBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><rect x="3" y="3" width="18" height="18" rx="1" opacity="0.4"/><line x1="9" y1="3" x2="9" y2="21" opacity="0.4"/><line x1="15" y1="3" x2="15" y2="21" opacity="0.4"/><line x1="3" y1="9" x2="21" y2="9" opacity="0.4"/><line x1="3" y1="15" x2="21" y2="15" opacity="0.4"/></svg>
+          正常视角宫格图（FOV 75°）
         </button>
       </div>
     </div>
@@ -444,6 +452,8 @@
   var downloadSep   = document.getElementById('downloadSeparateBtn');
   var downloadSepLbl= document.getElementById('downloadSepLabel');
   var downloadComp  = document.getElementById('downloadCompositeBtn');
+  var downloadGrid  = document.getElementById('downloadGridBtn');
+  var downloadNormalGrid = document.getElementById('downloadNormalGridBtn');
   var panoPanel     = document.getElementById('panoPanel');
   var panoCanvas    = document.getElementById('panoCanvas');
   var panoWrap      = document.getElementById('panoWrap');
@@ -852,6 +862,128 @@
     return comp;
   }
 
+  function buildGridComposite(faces, cols, rows, lineWidth) {
+    lineWidth = lineWidth || 6;
+    var totalW = 0, totalH = 0;
+    for (var c = 0; c < cols; c++) { totalW += faces[c].width; }
+    for (var r = 0; r < rows; r++) { totalH += faces[r * cols].height; }
+    totalW += (cols - 1) * lineWidth;
+    totalH += (rows - 1) * lineWidth;
+
+    var comp = document.createElement('canvas');
+    comp.width = totalW;
+    comp.height = totalH;
+    var ctx = comp.getContext('2d');
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, totalW, totalH);
+
+    var idx = 0;
+    var cy = 0;
+    for (var r = 0; r < rows; r++) {
+      var cx = 0;
+      var rowH = faces[r * cols].height;
+      for (var c = 0; c < cols; c++) {
+        ctx.drawImage(faces[idx], cx, cy);
+        cx += faces[idx].width + lineWidth;
+        idx++;
+      }
+      cy += rowH + lineWidth;
+    }
+    return comp;
+  }
+
+  function renderPerspectiveToCanvas(yaw, pitch, fovH, outW, outH) {
+    var canvas = document.createElement('canvas');
+    canvas.width = outW;
+    canvas.height = outH;
+    var ctx = canvas.getContext('2d');
+    var outData = ctx.createImageData(outW, outH);
+    var dst = outData.data;
+    var src = srcPixels.data;
+    var aspect = outW / outH;
+    var fovV = 2 * Math.atan(Math.tan(fovH / 2) / aspect);
+    var tanHalfH = Math.tan(fovH / 2);
+    var tanHalfV = Math.tan(fovV / 2);
+    var cosY = Math.cos(yaw), sinY = Math.sin(yaw);
+    var cosP = Math.cos(pitch), sinP = Math.sin(pitch);
+
+    for (var py = 0; py < outH; py++) {
+      var ndcY = -((py + 0.5) / outH) * 2 + 1;
+      var camY = ndcY * tanHalfV;
+      for (var px = 0; px < outW; px++) {
+        var ndcX = ((px + 0.5) / outW) * 2 - 1;
+        var camX = ndcX * tanHalfH;
+        var camZ = 1;
+
+        var y1 = camY * cosP - camZ * sinP;
+        var z1 = camY * sinP + camZ * cosP;
+        var x1 = camX;
+        var x2 = x1 * cosY + z1 * sinY;
+        var z2 = -x1 * sinY + z1 * cosY;
+        var y2 = y1;
+
+        var r = Math.sqrt(x2*x2 + y2*y2 + z2*z2);
+        var lat = Math.asin(y2 / r);
+        var lon = Math.atan2(x2, z2);
+        var u = (lon + Math.PI) / (2 * Math.PI);
+        var v = (Math.PI / 2 - lat) / Math.PI;
+        var sx = u * srcW;
+        var sy = v * srcH;
+
+        var x0 = Math.floor(sx);
+        var y0 = Math.floor(sy);
+        var fx = sx - x0;
+        var fy = sy - y0;
+        x0 = ((x0 % srcW) + srcW) % srcW;
+        var x1idx = (x0 + 1) % srcW;
+        var ya = y0 < 0 ? 0 : (y0 >= srcH ? srcH - 1 : y0);
+        var yb = ya + 1 >= srcH ? srcH - 1 : ya + 1;
+
+        var i00 = (ya * srcW + x0) * 4;
+        var i10 = (ya * srcW + x1idx) * 4;
+        var i01 = (yb * srcW + x0) * 4;
+        var i11 = (yb * srcW + x1idx) * 4;
+        var di = (py * outW + px) * 4;
+        var fx1 = 1 - fx, fy1 = 1 - fy;
+
+        dst[di]     = (src[i00]*fx1 + src[i10]*fx) * fy1 + (src[i01]*fx1 + src[i11]*fx) * fy;
+        dst[di + 1] = (src[i00+1]*fx1 + src[i10+1]*fx) * fy1 + (src[i01+1]*fx1 + src[i11+1]*fx) * fy;
+        dst[di + 2] = (src[i00+2]*fx1 + src[i10+2]*fx) * fy1 + (src[i01+2]*fx1 + src[i11+2]*fx) * fy;
+        dst[di + 3] = 255;
+      }
+    }
+    ctx.putImageData(outData, 0, 0);
+    return canvas;
+  }
+
+  function buildNormalViewGrid(cols, rows, lineWidth, fovDeg) {
+    lineWidth = lineWidth || 6;
+    var fovH = (fovDeg || 75) * Math.PI / 180;
+    var perspFaces = [];
+    var idx = 0;
+
+    for (var r = 0; r < rows; r++) {
+      for (var c = 0; c < cols; c++) {
+        var centerX = (c + 0.5) * srcW / cols;
+        var centerY = (r + 0.5) * srcH / rows;
+        var lon = (centerX / srcW) * 2 * Math.PI - Math.PI;
+        var lat = Math.PI / 2 - (centerY / srcH) * Math.PI;
+        var yaw = lon;
+        var pitch = lat;
+
+        var outW = faceCanvases[idx].width;
+        var outH = faceCanvases[idx].height;
+
+        var perspCanvas = renderPerspectiveToCanvas(yaw, pitch, fovH, outW, outH);
+        perspFaces.push(perspCanvas);
+        idx++;
+      }
+    }
+
+    return buildGridComposite(perspFaces, cols, rows, lineWidth);
+  }
+
   function finishSplit(info) {
     isProcessing = false;
     splitBtn.disabled = false;
@@ -936,6 +1068,33 @@
   downloadComp.addEventListener('click', function() {
     if (compositeCanvas) {
       downloadCanvas(compositeCanvas, sourceFileName + '_' + currentMode + '面体合并图_' + compositeCanvas.width + 'x' + compositeCanvas.height + '.png');
+    }
+  });
+
+  downloadGrid.addEventListener('click', function() {
+    if (faceCanvases.length > 0) {
+      var cfg = MODE_CONFIG[currentMode];
+      var gridCanvas = buildGridComposite(faceCanvases, cfg.cols, cfg.rows, 6);
+      downloadCanvas(gridCanvas, sourceFileName + '_' + currentMode + '面体宫格图_带分割线_' + gridCanvas.width + 'x' + gridCanvas.height + '.png');
+    }
+  });
+
+  downloadNormalGrid.addEventListener('click', function() {
+    if (faceCanvases.length > 0 && srcPixels) {
+      var cfg = MODE_CONFIG[currentMode];
+      downloadNormalGrid.disabled = true;
+      var originalText = downloadNormalGrid.innerHTML;
+      downloadNormalGrid.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>渲染中…';
+      setTimeout(function() {
+        try {
+          var normalCanvas = buildNormalViewGrid(cfg.cols, cfg.rows, 6, 75);
+          downloadCanvas(normalCanvas, sourceFileName + '_' + currentMode + '面体正常视角宫格图_FOV75_' + normalCanvas.width + 'x' + normalCanvas.height + '.png');
+        } catch (e) {
+          alert('渲染失败：' + e.message);
+        }
+        downloadNormalGrid.disabled = false;
+        downloadNormalGrid.innerHTML = originalText;
+      }, 50);
     }
   });
 
